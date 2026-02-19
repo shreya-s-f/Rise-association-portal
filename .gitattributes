@@ -1,0 +1,15 @@
+# Auto-normalize line endings for text files
+# Keep LF in the repository and on Unix-like systems
+# Convert to CRLF on checkout if core.autocrlf=true (default on Windows)
+
+* text=auto
+
+# Force LF for common source file types to avoid accidental CRLF
+*.ts     text eol=lf
+*.tsx    text eol=lf
+*.js     text eol=lf
+*.jsx    text eol=lf
+*.css    text eol=lf
+*.json   text eol=lf
+*.html   text eol=lf
+*.md     text eol=lf
