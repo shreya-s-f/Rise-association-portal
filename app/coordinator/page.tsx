@@ -1,15 +1,16 @@
 "use client"
 
 import type React from "react"
-
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
-import { auth, db, type Event } from "@/lib/db"
+import Link from "next/link"
+import { auth, db, type EventWithFiles, type UploadedFile } from "@/lib/db"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/hooks/use-toast"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
@@ -18,27 +19,49 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog"
+import {
+  Calendar,
+  ShieldCheck,
+  Plus,
+  Upload,
+  FileText,
+  Image as ImageIcon,
+  Edit3,
+  Trash2,
+  Search,
+  Layers,
+  Sparkles,
+  LogOut,
+  X,
+  CheckCircle2,
+  FolderOpen,
+} from "lucide-react"
 
 export default function CoordinatorDashboard() {
   const router = useRouter()
   const { toast } = useToast()
   const [user, setUser] = useState(auth.getCurrentUser())
-  const [events, setEvents] = useState<Event[]>([])
-  const [filteredEvents, setFilteredEvents] = useState<Event[]>([])
+  const [events, setEvents] = useState<EventWithFiles[]>([])
+  const [filteredEvents, setFilteredEvents] = useState<EventWithFiles[]>([])
+  const [searchTerm, setSearchTerm] = useState("")
   const [selectedYear, setSelectedYear] = useState<string>("all")
-  const [selectedEvent, setSelectedEvent] = useState<Event | null>(null)
+  const [isLoading, setIsLoading] = useState(true)
+
+  // Dialog states
   const [isAddEventOpen, setIsAddEventOpen] = useState(false)
   const [isEditEventOpen, setIsEditEventOpen] = useState(false)
   const [isUploadOpen, setIsUploadOpen] = useState(false)
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
+  const [eventToDelete, setEventToDelete] = useState<string | null>(null)
+
+  const [selectedEvent, setSelectedEvent] = useState<EventWithFiles | null>(null)
   const [uploadType, setUploadType] = useState<"photo" | "document">("photo")
-  const [isLoading, setIsLoading] = useState(true)
-  const [totalFiles, setTotalFiles] = useState(0)
-  const [eventFiles, setEventFiles] = useState<Record<string, any[]>>({})
+  const [selectedUploadFile, setSelectedUploadFile] = useState<File | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
   const [eventForm, setEventForm] = useState({
-    year: new Date().getFullYear().toString(),
+    year: "2025",
     coordinatorName: "",
     eventName: "",
     eventDate: "",
@@ -46,7 +69,7 @@ export default function CoordinatorDashboard() {
     description: "",
   })
 
-  const years = ["2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+  const years = ["all", "2025", "2024", "2023", "2022", "2021"]
 
   useEffect(() => {
     if (!auth.isAuthenticated() || !auth.isCoordinator()) {
@@ -59,57 +82,66 @@ export default function CoordinatorDashboard() {
   const loadEvents = async () => {
     try {
       setIsLoading(true)
-      const allEvents = await db.getEvents()
-      const allFiles = await db.getFiles()
-      setEvents(allEvents)
-      setFilteredEvents(allEvents)
-      setTotalFiles(allFiles.length)
-
-      // Load files for each event
-      const filesMap: Record<string, any[]> = {}
-      for (const event of allEvents) {
-        filesMap[event.id] = await db.getFilesByEventId(event.id)
-      }
-      setEventFiles(filesMap)
+      const data = await db.getEventsWithFiles()
+      setEvents(data)
+      setFilteredEvents(data)
     } catch (error) {
-      console.error('Failed to load events:', error)
+      console.error("Failed to load coordinator events:", error)
+      toast({
+        title: "Load Error",
+        description: "Could not fetch events list.",
+        variant: "destructive",
+      })
     } finally {
       setIsLoading(false)
     }
   }
 
   useEffect(() => {
-    if (selectedYear === "all") {
-      setFilteredEvents(events)
-    } else {
-      setFilteredEvents(events.filter((e) => e.year === selectedYear))
+    let list = events
+
+    if (selectedYear !== "all") {
+      list = list.filter((e) => e.year === selectedYear)
     }
-  }, [selectedYear, events])
+
+    if (searchTerm.trim()) {
+      const q = searchTerm.toLowerCase()
+      list = list.filter(
+        (e) =>
+          e.eventName.toLowerCase().includes(q) ||
+          e.description.toLowerCase().includes(q) ||
+          e.coordinatorName.toLowerCase().includes(q)
+      )
+    }
+
+    setFilteredEvents(list)
+  }, [searchTerm, selectedYear, events])
 
   const handleAddEvent = async () => {
-    if (!eventForm.eventName || !eventForm.coordinatorName || !eventForm.eventDate) {
+    if (!eventForm.eventName.trim() || !eventForm.coordinatorName.trim() || !eventForm.eventDate.trim()) {
       toast({
-        title: "Error",
-        description: "Please fill in all required fields",
+        title: "Required Fields",
+        description: "Please provide Event Name, Coordinators, and Date.",
         variant: "destructive",
       })
       return
     }
 
     try {
+      setIsSubmitting(true)
       await db.createEvent({
         ...eventForm,
-        createdBy: user?.id || "",
+        createdBy: user?.id || "coordinator",
       })
 
       toast({
-        title: "Success",
-        description: "Event added successfully!",
+        title: "Event Created!",
+        description: `"${eventForm.eventName}" added to RISE portal.`,
       })
 
       setIsAddEventOpen(false)
       setEventForm({
-        year: new Date().getFullYear().toString(),
+        year: "2025",
         coordinatorName: "",
         eventName: "",
         eventDate: "",
@@ -120,9 +152,11 @@ export default function CoordinatorDashboard() {
     } catch (error: any) {
       toast({
         title: "Error",
-        description: error.message || "Failed to add event",
+        description: error.message || "Failed to create event",
         variant: "destructive",
       })
+    } finally {
+      setIsSubmitting(false)
     }
   }
 
@@ -130,11 +164,12 @@ export default function CoordinatorDashboard() {
     if (!selectedEvent) return
 
     try {
+      setIsSubmitting(true)
       await db.updateEvent(selectedEvent.id, eventForm)
 
       toast({
-        title: "Success",
-        description: "Event updated successfully!",
+        title: "Event Updated!",
+        description: "Changes saved successfully.",
       })
 
       setIsEditEventOpen(false)
@@ -146,29 +181,33 @@ export default function CoordinatorDashboard() {
         description: error.message || "Failed to update event",
         variant: "destructive",
       })
+    } finally {
+      setIsSubmitting(false)
     }
   }
 
-  const handleDeleteEvent = async (eventId: string) => {
-    if (confirm("Are you sure you want to delete this event? All associated files will also be deleted.")) {
-      try {
-        await db.deleteEvent(eventId)
-        toast({
-          title: "Success",
-          description: "Event deleted successfully!",
-        })
-        loadEvents()
-      } catch (error: any) {
-        toast({
-          title: "Error",
-          description: error.message || "Failed to delete event",
-          variant: "destructive",
-        })
-      }
+  const handleDeleteEvent = async () => {
+    if (!eventToDelete) return
+
+    try {
+      await db.deleteEvent(eventToDelete)
+      toast({
+        title: "Event Deleted",
+        description: "Event and associated records removed.",
+      })
+      setIsDeleteConfirmOpen(false)
+      setEventToDelete(null)
+      loadEvents()
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to delete event",
+        variant: "destructive",
+      })
     }
   }
 
-  const openEditDialog = (event: Event) => {
+  const openEditDialog = (event: EventWithFiles) => {
     setSelectedEvent(event)
     setEventForm({
       year: event.year,
@@ -181,68 +220,36 @@ export default function CoordinatorDashboard() {
     setIsEditEventOpen(true)
   }
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!selectedEvent) return
-
-    const files = e.target.files
-    if (!files || files.length === 0) return
-
-    const file = files[0]
-
-    // Check file size (10MB limit)
-    const maxSize = 10 * 1024 * 1024 // 10MB
-    if (file.size > maxSize) {
-      toast({
-        title: "Error",
-        description: "File size exceeds 10MB limit. Please choose a smaller file.",
-        variant: "destructive",
-      })
-      return
-    }
+  const handleFileUpload = async () => {
+    if (!selectedEvent || !selectedUploadFile) return
 
     try {
-      const formData = new FormData()
-      formData.append("file", file)
-      formData.append("eventId", selectedEvent.id)
-      formData.append("fileType", uploadType)
+      setIsSubmitting(true)
+      await db.uploadFile(selectedUploadFile, selectedEvent.id, uploadType)
 
-      const response = await fetch("/api/files", {
-        method: "POST",
-        body: formData,
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('currentUser') || ''}`
-        }
+      toast({
+        title: "Upload Successful!",
+        description: `${selectedUploadFile.name} uploaded as ${uploadType}.`,
       })
 
-      if (response.ok) {
-        toast({
-          title: "Success",
-          description: `${uploadType === "photo" ? "Photo" : "Document"} uploaded successfully!`,
-        })
-        setIsUploadOpen(false)
-        // Refresh the events or files data
-        loadEvents()
-      } else {
-        const errorData = await response.json()
-        toast({
-          title: "Error",
-          description: `Upload failed: ${errorData.error}`,
-          variant: "destructive",
-        })
-      }
-    } catch (error) {
-      console.error("Error uploading file:", error)
+      setIsUploadOpen(false)
+      setSelectedUploadFile(null)
+      loadEvents()
+    } catch (error: any) {
       toast({
-        title: "Error",
-        description: "An error occurred while uploading the file. Please try again.",
+        title: "Upload Failed",
+        description: error.message || "Could not upload file.",
         variant: "destructive",
       })
+    } finally {
+      setIsSubmitting(false)
     }
   }
 
-  const openUploadDialog = (event: Event, type: "photo" | "document") => {
+  const openUploadDialog = (event: EventWithFiles, type: "photo" | "document") => {
     setSelectedEvent(event)
     setUploadType(type)
+    setSelectedUploadFile(null)
     setIsUploadOpen(true)
   }
 
@@ -251,367 +258,618 @@ export default function CoordinatorDashboard() {
     router.push("/")
   }
 
+  const totalPhotos = events.reduce(
+    (acc, e) => acc + (e.files?.filter((f) => f.fileType === "photo").length || 0),
+    0
+  )
+  const totalDocs = events.reduce(
+    (acc, e) => acc + (e.files?.filter((f) => f.fileType === "document").length || 0),
+    0
+  )
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-primary/10 via-secondary/10 to-accent/10">
-      <header className="border-b bg-card/50 backdrop-blur-sm sticky top-0 z-50">
-        <div className="container mx-auto px-4 py-4 flex justify-between items-center">
-          <div>
-            <h1 className="text-2xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
-              Coordinator Dashboard
-            </h1>
-            <p className="text-sm text-muted-foreground">Welcome, {user?.name}</p>
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col relative overflow-hidden">
+      {/* Background glow ambiance */}
+      <div className="absolute top-10 left-10 w-96 h-96 bg-blue-600/10 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute top-1/2 right-10 w-96 h-96 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none" />
+
+      {/* Header */}
+      <header className="sticky top-0 z-40 backdrop-blur-xl bg-slate-950/80 border-b border-slate-800">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-18 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Link href="/" className="flex items-center gap-2.5 group">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-cyan-400 flex items-center justify-center font-black text-white text-base shadow-md group-hover:scale-105 transition-transform">
+                BEC
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-white text-base tracking-tight">
+                    RISE Association
+                  </span>
+                  <Badge className="bg-gradient-to-r from-blue-600 to-cyan-600 text-white text-[10px]">
+                    Coordinator
+                  </Badge>
+                </div>
+                <p className="text-xs text-slate-400 hidden sm:block">
+                  Department of Information Science & Engineering
+                </p>
+              </div>
+            </Link>
           </div>
-          <Button variant="outline" onClick={handleLogout}>
-            Logout
-          </Button>
+
+          <div className="flex items-center gap-3">
+            <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs text-slate-300">
+              <ShieldCheck className="w-4 h-4 text-cyan-400" />
+              <span>{user?.name || "Coordinator"}</span>
+            </div>
+
+            <Button
+              size="sm"
+              onClick={() => setIsAddEventOpen(true)}
+              className="bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white font-semibold text-xs shadow-md"
+            >
+              <Plus className="w-3.5 h-3.5 mr-1" />
+              Add Event
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleLogout}
+              className="border-slate-700 bg-slate-900/50 text-slate-300 hover:text-white hover:bg-slate-800 text-xs"
+            >
+              <LogOut className="w-3.5 h-3.5 mr-1.5" />
+              Sign Out
+            </Button>
+          </div>
         </div>
       </header>
 
-      <div className="container mx-auto px-4 py-8">
-        <div className="grid md:grid-cols-3 gap-6 mb-8">
-          <Card className="gradient-primary text-primary-foreground">
-            <CardHeader>
-              <CardTitle className="text-4xl font-bold">{events.length}</CardTitle>
-              <CardDescription className="text-primary-foreground/80">Total Events</CardDescription>
-            </CardHeader>
-          </Card>
-
-          <Card className="gradient-secondary text-secondary-foreground">
-            <CardHeader>
-              <CardTitle className="text-4xl font-bold">
-                {
-                  events.filter((e) => new Date(e.eventDate.split(" ")[0].split("-").reverse().join("-")) > new Date())
-                    .length
-                }
-              </CardTitle>
-              <CardDescription className="text-secondary-foreground/80">Upcoming Events</CardDescription>
-            </CardHeader>
-          </Card>
-
-          <Card className="gradient-accent text-accent-foreground">
-            <CardHeader>
-              <CardTitle className="text-4xl font-bold">{totalFiles}</CardTitle>
-              <CardDescription className="text-accent-foreground/80">Total Files</CardDescription>
-            </CardHeader>
-          </Card>
-        </div>
-
-        <Card className="mb-6">
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-4">
-              <Label htmlFor="year-filter" className="text-sm font-medium whitespace-nowrap">
-                Filter by Year:
-              </Label>
-              <Select value={selectedYear} onValueChange={setSelectedYear}>
-                <SelectTrigger id="year-filter" className="w-[200px]">
-                  <SelectValue placeholder="Select year" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Years</SelectItem>
-                  {years.map((year) => (
-                    <SelectItem key={year} value={year}>
-                      {year}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <span className="text-sm text-muted-foreground">
-                Showing {filteredEvents.length} of {events.length} events
-              </span>
+      {/* Main Content */}
+      <main className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
+        {/* Metric Cards Grid */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 sm:gap-6 mb-8">
+          <div className="glass-panel p-5 rounded-2xl border border-slate-800 bg-slate-900/40 text-left">
+            <div className="w-9 h-9 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400 mb-3">
+              <Calendar className="w-4 h-4" />
             </div>
-          </CardContent>
-        </Card>
+            <div className="text-2xl sm:text-3xl font-bold text-white mb-1">{events.length}</div>
+            <div className="text-xs text-slate-400 font-medium">Total Events Recorded</div>
+          </div>
 
-        <div className="mb-6">
-          <Dialog open={isAddEventOpen} onOpenChange={setIsAddEventOpen}>
-            <DialogTrigger asChild>
-              <Button size="lg" className="gradient-primary">
-                <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                </svg>
-                Add New Event
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-              <DialogHeader>
-                <DialogTitle>Add New Event</DialogTitle>
-                <DialogDescription>Fill in the event details below</DialogDescription>
-              </DialogHeader>
+          <div className="glass-panel p-5 rounded-2xl border border-slate-800 bg-slate-900/40 text-left">
+            <div className="w-9 h-9 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 mb-3">
+              <ImageIcon className="w-4 h-4" />
+            </div>
+            <div className="text-2xl sm:text-3xl font-bold text-white mb-1">{totalPhotos}</div>
+            <div className="text-xs text-slate-400 font-medium">Event Photos Stored</div>
+          </div>
 
-              <div className="space-y-4">
-                <div className="grid md:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="year">Year</Label>
-                    <Select
-                      value={eventForm.year}
-                      onValueChange={(value) => setEventForm({ ...eventForm, year: value })}
-                    >
-                      <SelectTrigger id="year">
-                        <SelectValue placeholder="Select year" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {years.map((year) => (
-                          <SelectItem key={year} value={year}>
-                            {year}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
+          <div className="glass-panel p-5 rounded-2xl border border-slate-800 bg-slate-900/40 text-left">
+            <div className="w-9 h-9 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 mb-3">
+              <FileText className="w-4 h-4" />
+            </div>
+            <div className="text-2xl sm:text-3xl font-bold text-white mb-1">{totalDocs}</div>
+            <div className="text-xs text-slate-400 font-medium">Reports & Documents</div>
+          </div>
 
-                  <div className="space-y-2">
-                    <Label htmlFor="numberOfDays">Number of Days</Label>
-                    <Input
-                      id="numberOfDays"
-                      type="number"
-                      min="1"
-                      value={eventForm.numberOfDays}
-                      onChange={(e) => setEventForm({ ...eventForm, numberOfDays: Number.parseInt(e.target.value) })}
-                    />
-                  </div>
+          <div className="glass-panel p-5 rounded-2xl border border-slate-800 bg-slate-900/40 text-left">
+            <div className="w-9 h-9 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 mb-3">
+              <Layers className="w-4 h-4" />
+            </div>
+            <div className="text-2xl sm:text-3xl font-bold text-white mb-1">
+              {new Set(events.map((e) => e.year)).size}
+            </div>
+            <div className="text-xs text-slate-400 font-medium">Academic Years Active</div>
+          </div>
+        </div>
 
-                  <div className="space-y-2 md:col-span-2">
-                    <Label htmlFor="coordinatorName">Coordinator Name</Label>
-                    <Input
-                      id="coordinatorName"
-                      placeholder="Prof. John Doe"
-                      value={eventForm.coordinatorName}
-                      onChange={(e) => setEventForm({ ...eventForm, coordinatorName: e.target.value })}
-                    />
-                  </div>
+        {/* Controls and Filters */}
+        <div className="space-y-4 mb-8">
+          <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between">
+            {/* Search Input */}
+            <div className="relative flex-1 max-w-md">
+              <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <Input
+                placeholder="Search events, coordinators, or topics..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-10 bg-slate-900/60 border-slate-800 text-white placeholder:text-slate-500 text-sm focus-visible:ring-cyan-500"
+              />
+              {searchTerm && (
+                <button
+                  onClick={() => setSearchTerm("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
 
-                  <div className="space-y-2 md:col-span-2">
-                    <Label htmlFor="eventName">Event Name</Label>
-                    <Input
-                      id="eventName"
-                      placeholder="Workshop on AI"
-                      value={eventForm.eventName}
-                      onChange={(e) => setEventForm({ ...eventForm, eventName: e.target.value })}
-                    />
-                  </div>
+            {/* Year Filters */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 scrollbar-none">
+              <span className="text-xs font-semibold text-slate-400 mr-1 hidden sm:inline">
+                Year:
+              </span>
+              {years.map((y) => (
+                <button
+                  key={y}
+                  onClick={() => setSelectedYear(y)}
+                  className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all whitespace-nowrap ${
+                    selectedYear === y
+                      ? "bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/20 font-bold"
+                      : "bg-slate-900 text-slate-400 hover:text-white border border-slate-800"
+                  }`}
+                >
+                  {y === "all" ? "All Years" : y}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
 
-                  <div className="space-y-2 md:col-span-2">
-                    <Label htmlFor="eventDate">Event Date</Label>
-                    <Input
-                      id="eventDate"
-                      placeholder="01-01-2025 to 03-01-2025"
-                      value={eventForm.eventDate}
-                      onChange={(e) => setEventForm({ ...eventForm, eventDate: e.target.value })}
-                    />
-                  </div>
-
-                  <div className="space-y-2 md:col-span-2">
-                    <Label htmlFor="description">Description</Label>
-                    <Textarea
-                      id="description"
-                      placeholder="Event description..."
-                      value={eventForm.description}
-                      onChange={(e) => setEventForm({ ...eventForm, description: e.target.value })}
-                      rows={4}
-                    />
-                  </div>
-                </div>
-
-                <Button onClick={handleAddEvent} className="w-full gradient-primary">
-                  Add Event
-                </Button>
+        {/* Events List */}
+        {isLoading ? (
+          <div className="space-y-4">
+            {[1, 2, 3].map((n) => (
+              <div
+                key={n}
+                className="h-36 rounded-2xl bg-slate-900/40 border border-slate-800 animate-pulse"
+              />
+            ))}
+          </div>
+        ) : filteredEvents.length === 0 ? (
+          <Card className="border-slate-800 bg-slate-900/40 text-center py-16">
+            <CardContent className="space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-slate-800 flex items-center justify-center text-slate-500 mx-auto">
+                <Layers className="w-6 h-6" />
               </div>
-            </DialogContent>
-          </Dialog>
-        </div>
+              <h3 className="text-lg font-bold text-white">No events found</h3>
+              <p className="text-sm text-slate-400 max-w-sm mx-auto">
+                No events match your current filter. Add a new event or reset filters.
+              </p>
+              <Button
+                size="sm"
+                onClick={() => setIsAddEventOpen(true)}
+                className="bg-cyan-500 text-slate-950 hover:bg-cyan-400 font-semibold"
+              >
+                <Plus className="w-4 h-4 mr-1" />
+                Add First Event
+              </Button>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="space-y-4">
+            {filteredEvents.map((event) => {
+              const photos = event.files?.filter((f) => f.fileType === "photo") || []
+              const docs = event.files?.filter((f) => f.fileType === "document") || []
 
-        <div className="space-y-4">
-          <h2 className="text-2xl font-bold">
-            {selectedYear === "all" ? "All Events" : `Events from ${selectedYear}`}
-          </h2>
-
-          {filteredEvents.length === 0 ? (
-            <Card>
-              <CardContent className="py-12 text-center">
-                <p className="text-muted-foreground">
-                  {selectedYear === "all"
-                    ? "No events found. Add your first event to get started!"
-                    : `No events found for ${selectedYear}`}
-                </p>
-              </CardContent>
-            </Card>
-          ) : (
-            filteredEvents.map((event) => (
-              <Card key={event.id} className="hover:shadow-lg transition-shadow">
-                <CardHeader>
-                  <div className="flex justify-between items-start">
-                    <div className="flex-1">
-                      <CardTitle className="text-xl">{event.eventName}</CardTitle>
-                      <CardDescription className="mt-2">
-                        <div className="space-y-1">
-                          <p>
-                            <strong>Year:</strong> {event.year}
-                          </p>
-                          <p>
-                            <strong>Coordinator:</strong> {event.coordinatorName}
-                          </p>
-                          <p>
-                            <strong>Date:</strong> {event.eventDate}
-                          </p>
-                          <p>
-                            <strong>Duration:</strong> {event.numberOfDays} day(s)
-                          </p>
+              return (
+                <Card
+                  key={event.id}
+                  className="bg-slate-900/60 border-slate-800/80 hover:border-cyan-500/40 transition-all duration-300 shadow-lg"
+                >
+                  <CardContent className="p-5 sm:p-6">
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                      {/* Event Details */}
+                      <div className="space-y-2 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge className="bg-gradient-to-r from-blue-600 to-cyan-600 text-white font-semibold">
+                            {event.year}
+                          </Badge>
+                          <span className="text-xs text-slate-400 flex items-center gap-1">
+                            <Calendar className="w-3.5 h-3.5 text-cyan-400" />
+                            {event.eventDate}
+                          </span>
+                          <span className="text-xs text-slate-400">
+                            • {event.numberOfDays} day{event.numberOfDays !== 1 ? "s" : ""}
+                          </span>
                         </div>
-                      </CardDescription>
+
+                        <h3 className="text-lg sm:text-xl font-bold text-white tracking-tight">
+                          {event.eventName}
+                        </h3>
+
+                        <p className="text-xs text-slate-400 font-medium">
+                          Coordinators: <span className="text-slate-300">{event.coordinatorName}</span>
+                        </p>
+
+                        <p className="text-xs sm:text-sm text-slate-300 line-clamp-2 pt-1 leading-relaxed">
+                          {event.description}
+                        </p>
+
+                        {/* File Attachment Counts */}
+                        <div className="flex items-center gap-3 pt-2 text-xs text-slate-400">
+                          <span className="flex items-center gap-1">
+                            <ImageIcon className="w-3.5 h-3.5 text-cyan-400" />
+                            {photos.length} Photo{photos.length !== 1 ? "s" : ""}
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <FileText className="w-3.5 h-3.5 text-blue-400" />
+                            {docs.length} Document{docs.length !== 1 ? "s" : ""}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Action Buttons */}
+                      <div className="flex flex-wrap items-center gap-2 lg:flex-col lg:items-end">
+                        <div className="flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => openUploadDialog(event, "photo")}
+                            className="border-slate-700 bg-slate-800/60 hover:bg-slate-800 text-slate-200 text-xs"
+                          >
+                            <ImageIcon className="w-3.5 h-3.5 mr-1 text-cyan-400" />
+                            + Photo
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => openUploadDialog(event, "document")}
+                            className="border-slate-700 bg-slate-800/60 hover:bg-slate-800 text-slate-200 text-xs"
+                          >
+                            <FileText className="w-3.5 h-3.5 mr-1 text-blue-400" />
+                            + Doc
+                          </Button>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => router.push(`/coordinator/files/${event.id}`)}
+                            className="border-slate-700 bg-slate-800/60 hover:bg-slate-800 text-slate-200 text-xs"
+                          >
+                            <FolderOpen className="w-3.5 h-3.5 mr-1" />
+                            Files ({photos.length + docs.length})
+                          </Button>
+
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => openEditDialog(event)}
+                            className="text-slate-300 hover:text-white hover:bg-slate-800 p-2 h-auto"
+                            title="Edit Event"
+                          >
+                            <Edit3 className="w-4 h-4" />
+                          </Button>
+
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              setEventToDelete(event.id)
+                              setIsDeleteConfirmOpen(true)
+                            }}
+                            className="text-red-400 hover:text-red-300 hover:bg-red-500/10 p-2 h-auto"
+                            title="Delete Event"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </div>
                     </div>
+                  </CardContent>
+                </Card>
+              )
+            })}
+          </div>
+        )}
+      </main>
 
-                    <div className="flex gap-2">
-                      <Button variant="outline" size="sm" onClick={() => openEditDialog(event)}>
-                        Edit
-                      </Button>
-                      <Button variant="destructive" size="sm" onClick={() => handleDeleteEvent(event.id)}>
-                        Delete
-                      </Button>
-                    </div>
-                  </div>
-                </CardHeader>
-
-                <CardContent>
-                  <p className="text-sm text-muted-foreground mb-4">{event.description}</p>
-
-                  <div className="flex gap-2 flex-wrap">
-                    <Button size="sm" className="gradient-secondary" onClick={() => openUploadDialog(event, "photo")}>
-                      <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
-                        />
-                      </svg>
-                      Upload Photo
-                    </Button>
-
-                    <Button size="sm" className="gradient-accent" onClick={() => openUploadDialog(event, "document")}>
-                      <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"
-                        />
-                      </svg>
-                      Upload Document
-                    </Button>
-
-                    <Button size="sm" variant="outline" onClick={() => router.push(`/coordinator/files/${event.id}`)}>
-                      View Files ({(eventFiles[event.id] || []).length})
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            ))
-          )}
-        </div>
-      </div>
-
-      <Dialog open={isEditEventOpen} onOpenChange={setIsEditEventOpen}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      {/* Add Event Dialog */}
+      <Dialog open={isAddEventOpen} onOpenChange={setIsAddEventOpen}>
+        <DialogContent className="max-w-2xl bg-slate-900 border-slate-800 text-slate-100 max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Edit Event</DialogTitle>
-            <DialogDescription>Update the event details below</DialogDescription>
+            <DialogTitle className="text-xl font-bold text-white">Add New Event</DialogTitle>
+            <DialogDescription className="text-xs text-slate-400">
+              Enter the details of the event or workshop to add to RISE archives
+            </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4">
-            <div className="grid md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="edit-year">Year</Label>
-                <Select value={eventForm.year} onValueChange={(value) => setEventForm({ ...eventForm, year: value })}>
-                  <SelectTrigger id="edit-year">
+          <div className="space-y-4 mt-4">
+            <div className="grid sm:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="year" className="text-xs text-slate-300">
+                  Academic Year *
+                </Label>
+                <Select
+                  value={eventForm.year}
+                  onValueChange={(val) => setEventForm({ ...eventForm, year: val })}
+                >
+                  <SelectTrigger id="year" className="bg-slate-950/60 border-slate-700 text-white text-sm">
                     <SelectValue placeholder="Select year" />
                   </SelectTrigger>
-                  <SelectContent>
-                    {years.map((year) => (
-                      <SelectItem key={year} value={year}>
-                        {year}
+                  <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+                    {["2025", "2024", "2023", "2022", "2021"].map((y) => (
+                      <SelectItem key={y} value={y}>
+                        {y}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="edit-numberOfDays">Number of Days</Label>
+              <div className="space-y-1.5">
+                <Label htmlFor="numberOfDays" className="text-xs text-slate-300">
+                  Duration (Days) *
+                </Label>
                 <Input
-                  id="edit-numberOfDays"
+                  id="numberOfDays"
                   type="number"
                   min="1"
                   value={eventForm.numberOfDays}
-                  onChange={(e) => setEventForm({ ...eventForm, numberOfDays: Number.parseInt(e.target.value) })}
+                  onChange={(e) =>
+                    setEventForm({ ...eventForm, numberOfDays: parseInt(e.target.value) || 1 })
+                  }
+                  className="bg-slate-950/60 border-slate-700 text-white text-sm"
                 />
               </div>
 
-              <div className="space-y-2 md:col-span-2">
-                <Label htmlFor="edit-coordinatorName">Coordinator Name</Label>
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="coordinatorName" className="text-xs text-slate-300">
+                  Coordinator Name(s) *
+                </Label>
                 <Input
-                  id="edit-coordinatorName"
+                  id="coordinatorName"
+                  placeholder="e.g. Prof. G.B. Shettar and Prof. S.N. Kugli"
                   value={eventForm.coordinatorName}
                   onChange={(e) => setEventForm({ ...eventForm, coordinatorName: e.target.value })}
+                  className="bg-slate-950/60 border-slate-700 text-white text-sm"
                 />
               </div>
 
-              <div className="space-y-2 md:col-span-2">
-                <Label htmlFor="edit-eventName">Event Name</Label>
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="eventName" className="text-xs text-slate-300">
+                  Event Title *
+                </Label>
                 <Input
-                  id="edit-eventName"
+                  id="eventName"
+                  placeholder="e.g. 3-Day Hands-on Workshop on Generative AI"
                   value={eventForm.eventName}
                   onChange={(e) => setEventForm({ ...eventForm, eventName: e.target.value })}
+                  className="bg-slate-950/60 border-slate-700 text-white text-sm"
                 />
               </div>
 
-              <div className="space-y-2 md:col-span-2">
-                <Label htmlFor="edit-eventDate">Event Date</Label>
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="eventDate" className="text-xs text-slate-300">
+                  Event Date / Date Range *
+                </Label>
                 <Input
-                  id="edit-eventDate"
+                  id="eventDate"
+                  placeholder="e.g. 15-10-2025 or 15-10-2025 to 17-10-2025"
                   value={eventForm.eventDate}
                   onChange={(e) => setEventForm({ ...eventForm, eventDate: e.target.value })}
+                  className="bg-slate-950/60 border-slate-700 text-white text-sm"
                 />
               </div>
 
-              <div className="space-y-2 md:col-span-2">
-                <Label htmlFor="edit-description">Description</Label>
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="description" className="text-xs text-slate-300">
+                  Description & Key Highlights
+                </Label>
                 <Textarea
-                  id="edit-description"
+                  id="description"
+                  placeholder="Detailed agenda, resource persons, target participants, student response..."
                   value={eventForm.description}
                   onChange={(e) => setEventForm({ ...eventForm, description: e.target.value })}
                   rows={4}
+                  className="bg-slate-950/60 border-slate-700 text-white text-sm resize-none"
                 />
               </div>
             </div>
 
-            <Button onClick={handleEditEvent} className="w-full gradient-primary">
-              Update Event
+            <Button
+              onClick={handleAddEvent}
+              disabled={isSubmitting}
+              className="w-full bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white font-semibold py-5 shadow-lg shadow-cyan-500/20"
+            >
+              {isSubmitting ? "Creating Event..." : "Publish Event"}
             </Button>
           </div>
         </DialogContent>
       </Dialog>
 
-      <Dialog open={isUploadOpen} onOpenChange={setIsUploadOpen}>
-        <DialogContent>
+      {/* Edit Event Dialog */}
+      <Dialog open={isEditEventOpen} onOpenChange={setIsEditEventOpen}>
+        <DialogContent className="max-w-2xl bg-slate-900 border-slate-800 text-slate-100 max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Upload {uploadType === "photo" ? "Photo" : "Document"}</DialogTitle>
-            <DialogDescription>
-              Select a {uploadType === "photo" ? "photo" : "document"} to upload for this event
+            <DialogTitle className="text-xl font-bold text-white">Edit Event Details</DialogTitle>
+            <DialogDescription className="text-xs text-slate-400">
+              Update information for this event
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4">
-            <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
-              <Input
-                type="file"
-                accept={uploadType === "photo" ? "image/*" : ".pdf,.doc,.docx,.txt"}
-                onChange={handleFileUpload}
-                className="cursor-pointer"
-              />
-              <p className="text-sm text-muted-foreground mt-2">
-                {uploadType === "photo" ? "Supported: JPG, PNG, GIF" : "Supported: PDF, DOC, DOCX, TXT"}
-              </p>
+          <div className="space-y-4 mt-4">
+            <div className="grid sm:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="edit-year" className="text-xs text-slate-300">
+                  Year
+                </Label>
+                <Select
+                  value={eventForm.year}
+                  onValueChange={(val) => setEventForm({ ...eventForm, year: val })}
+                >
+                  <SelectTrigger id="edit-year" className="bg-slate-950/60 border-slate-700 text-white text-sm">
+                    <SelectValue placeholder="Select year" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-900 border-slate-800 text-slate-200">
+                    {["2025", "2024", "2023", "2022", "2021"].map((y) => (
+                      <SelectItem key={y} value={y}>
+                        {y}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="edit-duration" className="text-xs text-slate-300">
+                  Duration (Days)
+                </Label>
+                <Input
+                  id="edit-duration"
+                  type="number"
+                  min="1"
+                  value={eventForm.numberOfDays}
+                  onChange={(e) =>
+                    setEventForm({ ...eventForm, numberOfDays: parseInt(e.target.value) || 1 })
+                  }
+                  className="bg-slate-950/60 border-slate-700 text-white text-sm"
+                />
+              </div>
+
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="edit-coordinator" className="text-xs text-slate-300">
+                  Coordinators
+                </Label>
+                <Input
+                  id="edit-coordinator"
+                  value={eventForm.coordinatorName}
+                  onChange={(e) => setEventForm({ ...eventForm, coordinatorName: e.target.value })}
+                  className="bg-slate-950/60 border-slate-700 text-white text-sm"
+                />
+              </div>
+
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="edit-name" className="text-xs text-slate-300">
+                  Event Name
+                </Label>
+                <Input
+                  id="edit-name"
+                  value={eventForm.eventName}
+                  onChange={(e) => setEventForm({ ...eventForm, eventName: e.target.value })}
+                  className="bg-slate-950/60 border-slate-700 text-white text-sm"
+                />
+              </div>
+
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="edit-date" className="text-xs text-slate-300">
+                  Date
+                </Label>
+                <Input
+                  id="edit-date"
+                  value={eventForm.eventDate}
+                  onChange={(e) => setEventForm({ ...eventForm, eventDate: e.target.value })}
+                  className="bg-slate-950/60 border-slate-700 text-white text-sm"
+                />
+              </div>
+
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="edit-desc" className="text-xs text-slate-300">
+                  Description
+                </Label>
+                <Textarea
+                  id="edit-desc"
+                  value={eventForm.description}
+                  onChange={(e) => setEventForm({ ...eventForm, description: e.target.value })}
+                  rows={4}
+                  className="bg-slate-950/60 border-slate-700 text-white text-sm resize-none"
+                />
+              </div>
             </div>
+
+            <Button
+              onClick={handleEditEvent}
+              disabled={isSubmitting}
+              className="w-full bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white font-semibold py-5 shadow-lg shadow-cyan-500/20"
+            >
+              {isSubmitting ? "Saving Changes..." : "Save Changes"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* File Upload Modal */}
+      <Dialog open={isUploadOpen} onOpenChange={setIsUploadOpen}>
+        <DialogContent className="bg-slate-900 border-slate-800 text-slate-100 max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold text-white flex items-center gap-2">
+              {uploadType === "photo" ? (
+                <ImageIcon className="w-5 h-5 text-cyan-400" />
+              ) : (
+                <FileText className="w-5 h-5 text-blue-400" />
+              )}
+              Upload {uploadType === "photo" ? "Event Photo" : "Event Document"}
+            </DialogTitle>
+            <DialogDescription className="text-xs text-slate-400">
+              Attach a {uploadType} to "{selectedEvent?.eventName}"
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 mt-2">
+            <div className="border-2 border-dashed border-slate-800 hover:border-cyan-500/50 rounded-2xl p-6 text-center transition-colors bg-slate-950/50">
+              <input
+                type="file"
+                id="file-upload-input"
+                accept={uploadType === "photo" ? "image/*" : ".pdf,.doc,.docx,.txt"}
+                onChange={(e) => {
+                  if (e.target.files && e.target.files[0]) {
+                    setSelectedUploadFile(e.target.files[0])
+                  }
+                }}
+                className="hidden"
+              />
+              <label
+                htmlFor="file-upload-input"
+                className="cursor-pointer flex flex-col items-center gap-2"
+              >
+                <div className="w-12 h-12 rounded-xl bg-cyan-500/10 flex items-center justify-center text-cyan-400">
+                  <Upload className="w-6 h-6" />
+                </div>
+                <span className="text-sm font-semibold text-white">
+                  {selectedUploadFile ? selectedUploadFile.name : "Click to select a file"}
+                </span>
+                <span className="text-xs text-slate-500">
+                  {uploadType === "photo"
+                    ? "PNG, JPG, JPEG, WEBP up to 15MB"
+                    : "PDF, Word, or Text reports up to 15MB"}
+                </span>
+              </label>
+            </div>
+
+            <Button
+              onClick={handleFileUpload}
+              disabled={!selectedUploadFile || isSubmitting}
+              className="w-full bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white font-semibold py-5 shadow-lg shadow-cyan-500/20"
+            >
+              {isSubmitting ? "Uploading..." : `Upload ${uploadType === "photo" ? "Photo" : "Document"}`}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={isDeleteConfirmOpen} onOpenChange={setIsDeleteConfirmOpen}>
+        <DialogContent className="bg-slate-900 border-slate-800 text-slate-100 max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold text-red-400 flex items-center gap-2">
+              <Trash2 className="w-5 h-5" />
+              Confirm Deletion
+            </DialogTitle>
+            <DialogDescription className="text-xs text-slate-400">
+              Are you sure you want to delete this event? All associated photos and reports will also be removed.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center justify-end gap-3 mt-4">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsDeleteConfirmOpen(false)}
+              className="border-slate-800 text-slate-300"
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={handleDeleteEvent}
+              className="bg-red-600 hover:bg-red-500 text-white"
+            >
+              Delete Event
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

@@ -2,7 +2,7 @@ export interface User {
   id: string
   name: string
   email: string
-  password: string
+  password?: string
   role: "coordinator" | "student"
   address: string
   dateOfBirth: string
@@ -36,21 +36,26 @@ export interface UploadedFile {
   uploadedAt: string
 }
 
-// Safe storage abstraction: use localStorage for browser only
-const isBrowser = typeof window !== "undefined" && typeof localStorage !== "undefined"
-
-const storage = isBrowser ? {
-  getItem: (k: string) => localStorage.getItem(k),
-  setItem: (k: string, v: string) => localStorage.setItem(k, v),
-  removeItem: (k: string) => localStorage.removeItem(k)
-} : {
-  // Server-side storage is not available in client components
-  getItem: (k: string) => null,
-  setItem: (k: string, v: string) => {},
-  removeItem: (k: string) => {}
+export interface EventWithFiles extends Event {
+  files: UploadedFile[]
 }
 
-// Auth helper functions (client-safe)
+// Safe storage abstraction
+const isBrowser = typeof window !== "undefined" && typeof localStorage !== "undefined"
+
+const storage = isBrowser
+  ? {
+      getItem: (k: string) => localStorage.getItem(k),
+      setItem: (k: string, v: string) => localStorage.setItem(k, v),
+      removeItem: (k: string) => localStorage.removeItem(k),
+    }
+  : {
+      getItem: () => null,
+      setItem: () => {},
+      removeItem: () => {},
+    }
+
+// Auth helper functions
 export const auth = {
   getCurrentUser: (): User | null => {
     try {
@@ -58,6 +63,14 @@ export const auth = {
       return userStr ? JSON.parse(userStr) : null
     } catch {
       return null
+    }
+  },
+
+  getAuthHeader: (): Record<string, string> => {
+    const user = auth.getCurrentUser()
+    if (!user) return {}
+    return {
+      Authorization: `Bearer ${JSON.stringify(user)}`,
     }
   },
 
@@ -69,16 +82,16 @@ export const auth = {
         storage.removeItem("currentUser")
       }
     } catch {
-      // noop on server
+      // noop
     }
   },
 
   login: async (email: string, password: string): Promise<User | null> => {
     try {
-      const response = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
       })
 
       if (!response.ok) {
@@ -89,7 +102,7 @@ export const auth = {
       auth.setCurrentUser(user)
       return user
     } catch (error) {
-      console.error('Login error:', error)
+      console.error("Login error:", error)
       return null
     }
   },
@@ -108,112 +121,135 @@ export const auth = {
   },
 }
 
-// Client-side database functions that make API calls
+// Client-side database functions
 export const db = {
   // Events
-  getEvents: async (): Promise<Event[]> => {
-    const response = await fetch('/api/events', {
-      headers: {
-        'Authorization': `Bearer ${storage.getItem('currentUser') || ''}`
-      }
+  getEvents: async (year?: string): Promise<Event[]> => {
+    const query = year && year !== "all" ? `?year=${encodeURIComponent(year)}` : ""
+    const response = await fetch(`/api/events${query}`, {
+      headers: auth.getAuthHeader(),
     })
-    if (!response.ok) throw new Error('Failed to fetch events')
+    if (!response.ok) throw new Error("Failed to fetch events")
     return response.json()
   },
 
-  createEvent: async (eventData: Omit<Event, 'id' | 'createdAt' | 'updatedAt'>): Promise<Event> => {
-    const response = await fetch('/api/events', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${storage.getItem('currentUser') || ''}`
-      },
-      body: JSON.stringify(eventData)
+  getEventsWithFiles: async (year?: string): Promise<EventWithFiles[]> => {
+    const yearParam = year && year !== "all" ? `&year=${encodeURIComponent(year)}` : ""
+    const response = await fetch(`/api/events?includeFiles=true${yearParam}`, {
+      headers: auth.getAuthHeader(),
     })
-    if (!response.ok) throw new Error('Failed to create event')
+    if (!response.ok) throw new Error("Failed to fetch events with files")
     return response.json()
   },
 
-  updateEvent: async (eventId: string, eventData: Partial<Event>): Promise<boolean> => {
-    const response = await fetch('/api/events', {
-      method: 'PUT',
+  createEvent: async (eventData: Omit<Event, "id" | "createdAt" | "updatedAt">): Promise<Event> => {
+    const response = await fetch("/api/events", {
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${storage.getItem('currentUser') || ''}`
+        "Content-Type": "application/json",
+        ...auth.getAuthHeader(),
       },
-      body: JSON.stringify({ eventId, eventData })
+      body: JSON.stringify(eventData),
     })
-    if (!response.ok) throw new Error('Failed to update event')
-    return true
+    if (!response.ok) throw new Error("Failed to create event")
+    return response.json()
+  },
+
+  updateEvent: async (eventId: string, eventData: Partial<Event>): Promise<Event> => {
+    const response = await fetch("/api/events", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        ...auth.getAuthHeader(),
+      },
+      body: JSON.stringify({ eventId, eventData }),
+    })
+    if (!response.ok) throw new Error("Failed to update event")
+    return response.json()
   },
 
   deleteEvent: async (eventId: string): Promise<boolean> => {
-    const response = await fetch('/api/events', {
-      method: 'DELETE',
+    const response = await fetch("/api/events", {
+      method: "DELETE",
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${storage.getItem('currentUser') || ''}`
+        "Content-Type": "application/json",
+        ...auth.getAuthHeader(),
       },
-      body: JSON.stringify({ eventId })
+      body: JSON.stringify({ eventId }),
     })
-    if (!response.ok) throw new Error('Failed to delete event')
+    if (!response.ok) throw new Error("Failed to delete event")
     return true
   },
 
   // Files
-  getFiles: async (): Promise<any[]> => {
-    const response = await fetch('/api/files', {
-      headers: {
-        'Authorization': `Bearer ${storage.getItem('currentUser') || ''}`
-      }
+  getFiles: async (year?: string): Promise<UploadedFile[]> => {
+    const query = year && year !== "all" ? `?year=${encodeURIComponent(year)}` : ""
+    const response = await fetch(`/api/files${query}`, {
+      headers: auth.getAuthHeader(),
     })
-    if (!response.ok) throw new Error('Failed to fetch files')
+    if (!response.ok) throw new Error("Failed to fetch files")
     const data = await response.json()
-    // Flatten the organized files structure
-    return data.flatMap((item: any) => item.files)
+    if (Array.isArray(data)) {
+      if (data.length > 0 && data[0].files) {
+        return data.flatMap((item: any) => item.files)
+      }
+      return data
+    }
+    return []
   },
 
   getFilesByEventId: async (eventId: string): Promise<UploadedFile[]> => {
-    const allFiles = await db.getFiles()
-    return allFiles.filter(file => file.eventId === eventId)
+    const response = await fetch(`/api/files?eventId=${encodeURIComponent(eventId)}`, {
+      headers: auth.getAuthHeader(),
+    })
+    if (!response.ok) throw new Error("Failed to fetch files for event")
+    return response.json()
   },
 
-  createFile: async (fileData: Omit<UploadedFile, 'id' | 'uploadedAt'>): Promise<UploadedFile> => {
+  uploadFile: async (file: File, eventId: string, fileType: "photo" | "document"): Promise<UploadedFile> => {
     const formData = new FormData()
-    // This would need to be handled differently since file upload is more complex
-    // For now, throw an error - file uploads should use the file upload component
-    throw new Error('Use file upload API directly for file creation')
+    formData.append("file", file)
+    formData.append("eventId", eventId)
+    formData.append("fileType", fileType)
+
+    const response = await fetch("/api/files", {
+      method: "POST",
+      headers: auth.getAuthHeader(),
+      body: formData,
+    })
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}))
+      throw new Error(err.error || "Failed to upload file")
+    }
+
+    return response.json()
   },
 
   deleteFile: async (fileId: string): Promise<boolean> => {
-    const response = await fetch('/api/files', {
-      method: 'DELETE',
+    const response = await fetch("/api/files", {
+      method: "DELETE",
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${storage.getItem('currentUser') || ''}`
+        "Content-Type": "application/json",
+        ...auth.getAuthHeader(),
       },
-      body: JSON.stringify({ fileId })
+      body: JSON.stringify({ fileId }),
     })
-    if (!response.ok) throw new Error('Failed to delete file')
+    if (!response.ok) throw new Error("Failed to delete file")
     return true
   },
 
   // Users
-  getUserByEmail: async (email: string): Promise<User | null> => {
-    // This is mainly used during registration, so we'll handle it in the register page
-    throw new Error('Use registration API directly')
-  },
-
-  createUser: async (userData: Omit<User, 'id' | 'createdAt'>): Promise<User> => {
-    const response = await fetch('/api/users', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(userData)
+  createUser: async (userData: Omit<User, "id" | "createdAt">): Promise<User> => {
+    const response = await fetch("/api/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(userData),
     })
     if (!response.ok) {
-      const error = await response.json()
-      throw new Error(error.error || 'Failed to create user')
+      const error = await response.json().catch(() => ({}))
+      throw new Error(error.error || "Failed to create user")
     }
     return response.json()
-  }
+  },
 }

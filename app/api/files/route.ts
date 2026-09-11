@@ -3,26 +3,16 @@ import { db, auth } from "@/lib/server-db-functions"
 import { writeFile, mkdir, unlink } from "fs/promises"
 import { join } from "path"
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
+const MAX_FILE_SIZE = 15 * 1024 * 1024 // 15MB
 const UPLOAD_DIR = join(process.cwd(), "public", "uploads")
 
 export async function POST(req: NextRequest) {
   try {
     const authHeader = req.headers.get('authorization')
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    const currentUser = auth.getUserFromAuthHeader(authHeader)
 
-    const userData = authHeader.substring(7) // Remove 'Bearer ' prefix
-    let currentUser: any = null
-    try {
-      currentUser = JSON.parse(userData)
-    } catch {
-      return NextResponse.json({ error: "Invalid authentication" }, { status: 401 })
-    }
-
-    if (!currentUser) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    if (!currentUser || currentUser.role !== "coordinator") {
+      return NextResponse.json({ error: "Unauthorized - Coordinator access required" }, { status: 401 })
     }
 
     const formData = await req.formData()
@@ -32,7 +22,7 @@ export async function POST(req: NextRequest) {
 
     if (!file || !eventId || !fileType) {
       return NextResponse.json(
-        { error: "Missing required fields" },
+        { error: "Missing required fields (file, eventId, fileType)" },
         { status: 400 }
       )
     }
@@ -40,7 +30,7 @@ export async function POST(req: NextRequest) {
     // Check file size
     if (file.size > MAX_FILE_SIZE) {
       return NextResponse.json(
-        { error: "File size exceeds 10MB limit" },
+        { error: "File size exceeds 15MB limit" },
         { status: 400 }
       )
     }
@@ -48,9 +38,10 @@ export async function POST(req: NextRequest) {
     // Ensure upload directory exists
     await mkdir(UPLOAD_DIR, { recursive: true })
 
-    // Generate unique filename
-    const fileExtension = file.name.split('.').pop()
-    const uniqueFileName = `${Date.now()}-${Math.random().toString(36).substring(2)}.${fileExtension}`
+    // Generate unique safe filename
+    const originalName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_")
+    const fileExtension = originalName.split('.').pop() || "bin"
+    const uniqueFileName = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}.${fileExtension}`
     const filePath = join(UPLOAD_DIR, uniqueFileName)
 
     // Convert file to buffer and save
@@ -58,11 +49,11 @@ export async function POST(req: NextRequest) {
     await writeFile(filePath, Buffer.from(buffer))
 
     // Save file metadata to database
-    const uploadedFile = await db.createFile({
+    const uploadedFile = db.createFile({
       eventId,
       fileName: file.name,
       fileType,
-      fileData: `/uploads/${uniqueFileName}`, // Store file path instead of base64
+      fileData: `/uploads/${uniqueFileName}`,
       uploadedBy: currentUser.id,
     })
 
@@ -79,20 +70,10 @@ export async function POST(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   try {
     const authHeader = req.headers.get('authorization')
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    const currentUser = auth.getUserFromAuthHeader(authHeader)
 
-    const userData = authHeader.substring(7) // Remove 'Bearer ' prefix
-    let currentUser: any = null
-    try {
-      currentUser = JSON.parse(userData)
-    } catch {
-      return NextResponse.json({ error: "Invalid authentication" }, { status: 401 })
-    }
-
-    if (!currentUser) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    if (!currentUser || currentUser.role !== "coordinator") {
+      return NextResponse.json({ error: "Unauthorized - Coordinator access required" }, { status: 401 })
     }
 
     const { fileId } = await req.json()
@@ -104,7 +85,7 @@ export async function DELETE(req: NextRequest) {
     }
 
     // Get file info before deleting
-    const files = await db.getFiles()
+    const files = db.getFiles()
     const fileToDelete = files.find(f => f.id === fileId)
 
     if (!fileToDelete) {
@@ -114,17 +95,17 @@ export async function DELETE(req: NextRequest) {
       )
     }
 
-    // Delete file from disk
+    // Delete file from disk if exists
     try {
-      const filePath = join(process.cwd(), "public", fileToDelete.fileData)
+      const cleanPath = fileToDelete.fileData.replace(/^\/+/, '')
+      const filePath = join(process.cwd(), "public", cleanPath)
       await unlink(filePath)
     } catch (fileError) {
       console.warn("Could not delete file from disk:", fileError)
-      // Continue with database deletion even if file deletion fails
     }
 
     // Delete from database
-    const success = await db.deleteFile(fileId)
+    const success = db.deleteFile(fileId)
     if (!success) {
       return NextResponse.json(
         { error: "File not found in database" },
@@ -145,17 +126,7 @@ export async function DELETE(req: NextRequest) {
 export async function GET(req: NextRequest) {
   try {
     const authHeader = req.headers.get('authorization')
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
-
-    const userData = authHeader.substring(7) // Remove 'Bearer ' prefix
-    let currentUser: any = null
-    try {
-      currentUser = JSON.parse(userData)
-    } catch {
-      return NextResponse.json({ error: "Invalid authentication" }, { status: 401 })
-    }
+    const currentUser = auth.getUserFromAuthHeader(authHeader)
 
     if (!currentUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
@@ -163,30 +134,33 @@ export async function GET(req: NextRequest) {
 
     const url = new URL(req.url)
     const year = url.searchParams.get("year")
+    const eventId = url.searchParams.get("eventId")
 
-    let files: any[]
-    if (year) {
-      files = await db.getFilesByYear(year)
-    } else {
-      files = await db.getFiles()
+    let files = db.getFiles()
+
+    if (eventId) {
+      files = files.filter(f => f.eventId === eventId)
+      return NextResponse.json(files)
     }
 
-    if (year) {
-      const events = await db.getEventsByYear(year)
-      const organizedFiles = events.map(event => ({
-        event,
-        files: files.filter(file => file.eventId === event.id)
-      }))
-      return NextResponse.json(organizedFiles)
-    } else {
-      // Return all files with their event info
-      const events = await db.getEvents()
-      const organizedFiles = events.map(event => ({
-        event,
-        files: files.filter(file => file.eventId === event.id)
-      }))
+    if (year && year !== "all") {
+      files = files.filter(f => f.year === year)
+    }
+
+    // Return flat list or grouped depending on format parameter
+    const format = url.searchParams.get("format")
+    if (format === "grouped") {
+      const events = db.getEvents()
+      const organizedFiles = events
+        .filter(event => !year || year === "all" || event.year === year)
+        .map(event => ({
+          event,
+          files: files.filter(file => file.eventId === event.id)
+        }))
       return NextResponse.json(organizedFiles)
     }
+
+    return NextResponse.json(files)
   } catch (error) {
     console.error("Error fetching files:", error)
     return NextResponse.json(

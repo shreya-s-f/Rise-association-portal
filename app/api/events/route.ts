@@ -4,23 +4,22 @@ import { db, auth } from "@/lib/server-db-functions"
 export async function GET(request: NextRequest) {
   try {
     const authHeader = request.headers.get('authorization')
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
-
-    const userData = authHeader.substring(7) // Remove 'Bearer ' prefix
-    let currentUser: any = null
-    try {
-      currentUser = JSON.parse(userData)
-    } catch {
-      return NextResponse.json({ error: "Invalid authentication" }, { status: 401 })
-    }
+    const currentUser = auth.getUserFromAuthHeader(authHeader)
 
     if (!currentUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const events = await db.getEvents()
+    const { searchParams } = new URL(request.url)
+    const includeFiles = searchParams.get('includeFiles') === 'true'
+    const year = searchParams.get('year')
+
+    let events = includeFiles ? db.getEventsWithFiles() : db.getEvents()
+
+    if (year && year !== 'all') {
+      events = events.filter((e) => e.year === year)
+    }
+
     return NextResponse.json(events)
   } catch (error) {
     console.error("Error fetching events:", error)
@@ -34,24 +33,17 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const authHeader = request.headers.get('authorization')
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
-
-    const userData = authHeader.substring(7) // Remove 'Bearer ' prefix
-    let currentUser: any = null
-    try {
-      currentUser = JSON.parse(userData)
-    } catch {
-      return NextResponse.json({ error: "Invalid authentication" }, { status: 401 })
-    }
+    const currentUser = auth.getUserFromAuthHeader(authHeader)
 
     if (!currentUser || currentUser.role !== "coordinator") {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+      return NextResponse.json({ error: "Unauthorized - Coordinator access required" }, { status: 401 })
     }
 
     const eventData = await request.json()
-    const newEvent = await db.createEvent(eventData)
+    const newEvent = db.createEvent({
+      ...eventData,
+      createdBy: currentUser.id,
+    })
     return NextResponse.json(newEvent)
   } catch (error) {
     console.error("Error creating event:", error)
@@ -65,28 +57,18 @@ export async function POST(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   try {
     const authHeader = request.headers.get('authorization')
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
-
-    const userData = authHeader.substring(7) // Remove 'Bearer ' prefix
-    let currentUser: any = null
-    try {
-      currentUser = JSON.parse(userData)
-    } catch {
-      return NextResponse.json({ error: "Invalid authentication" }, { status: 401 })
-    }
+    const currentUser = auth.getUserFromAuthHeader(authHeader)
 
     if (!currentUser || currentUser.role !== "coordinator") {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+      return NextResponse.json({ error: "Unauthorized - Coordinator access required" }, { status: 401 })
     }
 
     const { eventId, eventData } = await request.json()
-    const success = await db.updateEvent(eventId, eventData)
-    if (!success) {
+    const updated = db.updateEvent(eventId, eventData)
+    if (!updated) {
       return NextResponse.json({ error: "Event not found" }, { status: 404 })
     }
-    return NextResponse.json({ success: true })
+    return NextResponse.json(updated)
   } catch (error) {
     console.error("Error updating event:", error)
     return NextResponse.json(
@@ -99,24 +81,14 @@ export async function PUT(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   try {
     const authHeader = request.headers.get('authorization')
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
-
-    const userData = authHeader.substring(7) // Remove 'Bearer ' prefix
-    let currentUser: any = null
-    try {
-      currentUser = JSON.parse(userData)
-    } catch {
-      return NextResponse.json({ error: "Invalid authentication" }, { status: 401 })
-    }
+    const currentUser = auth.getUserFromAuthHeader(authHeader)
 
     if (!currentUser || currentUser.role !== "coordinator") {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+      return NextResponse.json({ error: "Unauthorized - Coordinator access required" }, { status: 401 })
     }
 
     const { eventId } = await request.json()
-    const success = await db.deleteEvent(eventId)
+    const success = db.deleteEvent(eventId)
     if (!success) {
       return NextResponse.json({ error: "Event not found" }, { status: 404 })
     }
